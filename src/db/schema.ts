@@ -91,6 +91,7 @@ export const semesters = pgTable(
     studyHours: text("study_hours"), // JSON: {"0": 2, "1": 4, ...}
     createdAt: bigint("created_at", { mode: "number" }).notNull(), // Unix timestamp ms
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+    deletedAt: bigint("deleted_at", { mode: "number" }), // Soft delete timestamp
   },
   (table) => [
     index("semesters_user_id_idx").on(table.userId),
@@ -114,6 +115,7 @@ export const subjects = pgTable(
     progress: real("progress").notNull().default(0), // 0.0 - 1.0
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+    deletedAt: bigint("deleted_at", { mode: "number" }), // Soft delete timestamp
   },
   (table) => [
     index("subjects_user_id_idx").on(table.userId),
@@ -137,6 +139,7 @@ export const topics = pgTable(
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+    deletedAt: bigint("deleted_at", { mode: "number" }), // Soft delete timestamp
   },
   (table) => [
     index("topics_subject_id_idx").on(table.subjectId),
@@ -158,6 +161,7 @@ export const assessments = pgTable(
     topicIds: text("topic_ids"), // JSON array: ["topic-1", "topic-2"]
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+    deletedAt: bigint("deleted_at", { mode: "number" }), // Soft delete timestamp
   },
   (table) => [
     index("assessments_subject_id_idx").on(table.subjectId),
@@ -187,6 +191,7 @@ export const events = pgTable(
     colorHex: text("color_hex").notNull(), // "#RRGGBB"
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+    deletedAt: bigint("deleted_at", { mode: "number" }), // Soft delete timestamp
   },
   (table) => [
     index("events_user_id_idx").on(table.userId),
@@ -210,6 +215,7 @@ export const studySessions = pgTable(
     actualMinutes: integer("actual_minutes"),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+    deletedAt: bigint("deleted_at", { mode: "number" }), // Soft delete timestamp
   },
   (table) => [
     index("study_sessions_topic_id_idx").on(table.topicId),

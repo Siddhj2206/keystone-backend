@@ -55,9 +55,10 @@ export function rateLimiter(config: RateLimitConfig) {
 
 /**
  * Rate limit for auth endpoints
+ * NOTE: Disabled for development - set high limit
  */
 export const authRateLimiter = rateLimiter({
-  maxRequests: 100,
+  maxRequests: 999999, // Effectively disabled for dev
   keyGenerator: (c) =>
     c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown",
 });
