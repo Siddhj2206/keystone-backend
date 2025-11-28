@@ -7,6 +7,7 @@
 
 export interface Semester {
   id: string;
+  name?: string; // Optional semester name (e.g., "Fall 2024")
   startDate: string;
   endDate: string;
   isActive: boolean;
@@ -169,6 +170,7 @@ export interface UpdateEventInput {
 }
 
 export interface InitializeSemesterInput {
+  name?: string; // Optional semester name
   startDate: string;
   endDate: string;
   studyHours?: DailyStudyHours;
@@ -177,6 +179,13 @@ export interface InitializeSemesterInput {
     colorHex: string;
     classSlots?: Omit<ClassSlot, "id">[];
   }[];
+}
+
+export interface UpdateSemesterInput {
+  name?: string;
+  startDate?: string;
+  endDate?: string;
+  studyHours?: DailyStudyHours;
 }
 
 // ============================================================================
@@ -192,6 +201,30 @@ export interface DailyAgenda {
 export interface ScheduleGenerationResult {
   message: string;
   sessionsCreated: number;
+}
+
+// Types for ML schedule generation service
+export interface ScheduleGenerationRequest {
+  subjects: {
+    id: string;
+    name: string;
+    topics?: {
+      id: string;
+      title: string;
+      estMinutes: number;
+      status: "pending" | "completed" | "needs_revision";
+    }[];
+  }[];
+  studyHours: DailyStudyHours;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface GeneratedStudySession {
+  topicId: string;
+  startTime: string;
+  endTime: string;
+  sessionType: "learning" | "revision";
 }
 
 // ============================================================================

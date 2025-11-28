@@ -214,7 +214,7 @@ scheduleRoutes.patch("/:id/complete", zValidator("json", completeSessionSchema),
 
   // If needs more time, schedule additional session
   if (needsMoreTime && remainingMinutes && remainingMinutes > 0) {
-    const sessionEndTime = typeof session.endTime === "number" ? session.endTime : session.endTime.getTime();
+    const sessionEndTime = session.endTime as number;
     const nextStartTime = sessionEndTime + 15 * 60000; // 15 min break
 
     await db.insert(studySessions).values({

@@ -73,6 +73,7 @@ export const semesters = pgTable("semesters", {
   userId: text("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
+  name: text("name"), // Optional semester name (e.g., "Fall 2024")
   startDate: text("start_date").notNull(), // ISO date "YYYY-MM-DD"
   endDate: text("end_date").notNull(),
   isActive: boolean("is_active").notNull().default(true),
