@@ -1,6 +1,49 @@
 // TypeScript interfaces matching frontend types exactly
 // These are the API response/request contracts
 
+import type { Context } from "hono";
+import type { InferSelectModel } from "drizzle-orm";
+import type {
+  semesters,
+  subjects,
+  topics,
+  assessments,
+  events,
+  studySessions,
+} from "../db/schema";
+
+// ============================================================================
+// Database Row Types (inferred from Drizzle schema)
+// ============================================================================
+
+export type DbSemester = InferSelectModel<typeof semesters>;
+export type DbSubject = InferSelectModel<typeof subjects>;
+export type DbTopic = InferSelectModel<typeof topics>;
+export type DbAssessment = InferSelectModel<typeof assessments>;
+export type DbEvent = InferSelectModel<typeof events>;
+export type DbStudySession = InferSelectModel<typeof studySessions>;
+
+// Subject with relations
+export type DbSubjectWithTopics = DbSubject & {
+  topics: DbTopic[];
+};
+
+// Topic with subject relation
+export type DbTopicWithSubject = DbTopic & {
+  subject: DbSubject;
+};
+
+// Study session with topic and subject relations
+export type DbStudySessionWithRelations = DbStudySession & {
+  topic: DbTopicWithSubject;
+};
+
+// ============================================================================
+// Hono Context Type
+// ============================================================================
+
+export type AppContext = Context;
+
 // ============================================================================
 // Core Domain Types (match frontend lib/types.ts)
 // ============================================================================
@@ -231,26 +274,34 @@ export interface GeneratedStudySession {
 // Sync Types
 // ============================================================================
 
+// Client data uses DB row format (without userId since it's implicit)
+export type SyncRecord = {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  [key: string]: unknown;
+};
+
 export interface SyncRequest {
   clientData: {
-    semesters: any[];
-    subjects: any[];
-    topics: any[];
-    assessments: any[];
-    events: any[];
-    studySessions: any[];
+    semesters: SyncRecord[];
+    subjects: SyncRecord[];
+    topics: SyncRecord[];
+    assessments: SyncRecord[];
+    events: SyncRecord[];
+    studySessions: SyncRecord[];
   };
   lastSyncedAt: number;
 }
 
 export interface SyncResponse {
   serverData: {
-    semesters: any[];
-    subjects: any[];
-    topics: any[];
-    assessments: any[];
-    events: any[];
-    studySessions: any[];
+    semesters: SyncRecord[];
+    subjects: SyncRecord[];
+    topics: SyncRecord[];
+    assessments: SyncRecord[];
+    events: SyncRecord[];
+    studySessions: SyncRecord[];
   };
   syncedAt: number;
 }

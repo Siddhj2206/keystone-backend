@@ -7,7 +7,14 @@ import { auth } from "../lib/auth";
 import { db } from "../db";
 import { studySessions, topics, subjects, events, semesters } from "../db/schema";
 import { parseScheduleFile } from "../services/pdf-parser";
-import type { StudySession, FixedEvent, DailyAgenda } from "../lib/types";
+import type {
+  StudySession,
+  FixedEvent,
+  DailyAgenda,
+  AppContext,
+  DbEvent,
+  DbStudySessionWithRelations,
+} from "../lib/types";
 
 export const scheduleRoutes = new Hono();
 
@@ -15,19 +22,15 @@ export const scheduleRoutes = new Hono();
 // Helpers
 // ============================================================================
 
-async function getUser(c: any) {
+async function getUser(c: AppContext) {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   return session?.user ?? null;
 }
 
 // Transform DB study session to API response format
-function formatStudySession(dbSession: any): StudySession {
-  const startTime = typeof dbSession.startTime === "number" 
-    ? new Date(dbSession.startTime).toISOString()
-    : dbSession.startTime.toISOString();
-  const endTime = typeof dbSession.endTime === "number"
-    ? new Date(dbSession.endTime).toISOString()
-    : dbSession.endTime.toISOString();
+function formatStudySession(dbSession: DbStudySessionWithRelations): StudySession {
+  const startTime = new Date(dbSession.startTime).toISOString();
+  const endTime = new Date(dbSession.endTime).toISOString();
     
   return {
     id: dbSession.id,
@@ -36,13 +39,13 @@ function formatStudySession(dbSession: any): StudySession {
     subjectColor: dbSession.topic?.subject?.colorHex ?? "#888888",
     startTime,
     endTime,
-    status: dbSession.status,
-    sessionType: dbSession.sessionType,
+    status: dbSession.status as StudySession["status"],
+    sessionType: dbSession.sessionType as StudySession["sessionType"],
   };
 }
 
 // Transform DB event to FixedEvent API response format
-function formatFixedEvent(dbEvent: any): FixedEvent {
+function formatFixedEvent(dbEvent: DbEvent): FixedEvent {
   return {
     id: dbEvent.id,
     title: dbEvent.title,
@@ -238,6 +241,10 @@ scheduleRoutes.patch("/:id/complete", zValidator("json", completeSessionSchema),
       },
     },
   });
+
+  if (!refreshed) {
+    return c.json({ error: "Session not found after update" }, 500);
+  }
 
   return c.json(formatStudySession(refreshed));
 });

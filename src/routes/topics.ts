@@ -1,12 +1,12 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 
 import { auth } from "../lib/auth";
 import { db } from "../db";
-import { topics, subjects } from "../db/schema";
-import type { Topic } from "../lib/types";
+import { topics, subjects, studySessions } from "../db/schema";
+import type { Topic, AppContext, DbTopic } from "../lib/types";
 
 export const topicRoutes = new Hono();
 
@@ -14,7 +14,7 @@ export const topicRoutes = new Hono();
 // Helpers
 // ============================================================================
 
-async function getUser(c: any) {
+async function getUser(c: AppContext) {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   return session?.user ?? null;
 }
@@ -32,7 +32,7 @@ async function verifyTopicOwnership(topicId: string, userId: string) {
 }
 
 // Transform DB topic to API response format
-function formatTopic(dbTopic: any): Topic {
+function formatTopic(dbTopic: DbTopic): Topic {
   return {
     id: dbTopic.id,
     title: dbTopic.title,
@@ -40,8 +40,8 @@ function formatTopic(dbTopic: any): Topic {
     estMinutes: dbTopic.estMinutes,
     currentMastery: typeof dbTopic.currentMastery === "number" 
       ? dbTopic.currentMastery 
-      : parseFloat(dbTopic.currentMastery) || 0,
-    status: dbTopic.status,
+      : parseFloat(String(dbTopic.currentMastery)) || 0,
+    status: dbTopic.status as Topic["status"],
     sortOrder: dbTopic.sortOrder,
   };
 }
@@ -112,6 +112,10 @@ topicRoutes.post("/", zValidator("json", createTopicSchema), async (c) => {
     })
     .returning();
 
+  if (!newTopic) {
+    return c.json({ error: "Failed to create topic" }, 500);
+  }
+
   return c.json(formatTopic(newTopic), 201);
 });
 
@@ -137,7 +141,7 @@ topicRoutes.patch("/:id", zValidator("json", updateTopicSchema), async (c) => {
     return c.json({ error: "Topic not found" }, 404);
   }
 
-  const updateData: any = { updatedAt: now };
+  const updateData: Partial<DbTopic> = { updatedAt: now };
   if (input.title !== undefined) updateData.title = input.title;
   if (input.estMinutes !== undefined) updateData.estMinutes = input.estMinutes;
   if (input.currentMastery !== undefined) updateData.currentMastery = input.currentMastery;
@@ -149,6 +153,10 @@ topicRoutes.patch("/:id", zValidator("json", updateTopicSchema), async (c) => {
     .set(updateData)
     .where(eq(topics.id, topicId))
     .returning();
+
+  if (!updated) {
+    return c.json({ error: "Failed to update topic" }, 500);
+  }
 
   return c.json(formatTopic(updated));
 });
@@ -192,6 +200,10 @@ topicRoutes.patch("/:id/mastery", zValidator("json", updateMasterySchema), async
   // Update subject progress
   await updateSubjectProgress(topic.subjectId);
 
+  if (!updated) {
+    return c.json({ error: "Failed to update topic mastery" }, 500);
+  }
+
   return c.json(formatTopic(updated));
 });
 
@@ -224,8 +236,32 @@ topicRoutes.put("/:id/reorder", zValidator("json", reorderSchema), async (c) => 
     .where(eq(topics.id, topicId))
     .returning();
 
+  if (!updated) {
+    return c.json({ error: "Failed to reorder topic" }, 500);
+  }
+
   return c.json(formatTopic(updated));
 });
+
+// Recursively get all descendant topic IDs (optimized batch version)
+async function getAllDescendantIds(topicId: string): Promise<string[]> {
+  const descendantIds: string[] = [];
+  let currentLevelIds = [topicId];
+
+  // Iteratively fetch children level by level
+  while (currentLevelIds.length > 0) {
+    const children = await db.query.topics.findMany({
+      where: inArray(topics.parentId, currentLevelIds),
+      columns: { id: true },
+    });
+
+    const childIds = children.map((c) => c.id);
+    descendantIds.push(...childIds);
+    currentLevelIds = childIds;
+  }
+
+  return descendantIds;
+}
 
 // DELETE /api/topics/:id - Delete topic
 topicRoutes.delete("/:id", async (c) => {
@@ -239,8 +275,25 @@ topicRoutes.delete("/:id", async (c) => {
     return c.json({ error: "Topic not found" }, 404);
   }
 
-  // Delete will cascade to children due to foreign key
-  await db.delete(topics).where(eq(topics.id, topicId));
+  // Get all descendant IDs to delete (cascade at app level since self-referential FK can't cascade)
+  const descendantIds = await getAllDescendantIds(topicId);
+  const allIdsToDelete = [topicId, ...descendantIds];
+
+  // Delete all study sessions for these topics first
+  if (allIdsToDelete.length > 0) {
+    await db.delete(studySessions).where(inArray(studySessions.topicId, allIdsToDelete));
+  }
+
+  // Delete all topics in one batch (must delete children first due to FK)
+  // Since we can't easily order by depth, delete in reverse order of discovery
+  // which naturally puts children before parents
+  if (allIdsToDelete.length > 0) {
+    // Delete descendants first, then the target topic
+    if (descendantIds.length > 0) {
+      await db.delete(topics).where(inArray(topics.id, descendantIds));
+    }
+    await db.delete(topics).where(eq(topics.id, topicId));
+  }
 
   // Update subject progress
   await updateSubjectProgress(topic.subjectId);

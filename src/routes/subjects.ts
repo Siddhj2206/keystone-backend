@@ -4,10 +4,20 @@ import { zValidator } from "@hono/zod-validator";
 import { eq, and } from "drizzle-orm";
 
 import { auth } from "../lib/auth";
+import { aiRateLimiter } from "../lib/rate-limit";
 import { db } from "../db";
 import { subjects, topics, events, semesters } from "../db/schema";
 import { parseSyllabusPdf } from "../services/pdf-parser";
-import type { Subject, Topic, ClassSlot } from "../lib/types";
+import type {
+  Subject,
+  Topic,
+  ClassSlot,
+  AppContext,
+  DbSubject,
+  DbTopic,
+  DbEvent,
+  DbSubjectWithTopics,
+} from "../lib/types";
 
 export const subjectRoutes = new Hono();
 
@@ -15,7 +25,7 @@ export const subjectRoutes = new Hono();
 // Helpers
 // ============================================================================
 
-async function getUser(c: any) {
+async function getUser(c: AppContext) {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   return session?.user ?? null;
 }
@@ -27,7 +37,7 @@ async function getActiveSemester(userId: string) {
 }
 
 // Build hierarchical topic tree from flat list
-function buildTopicTree(flatTopics: any[]): Topic[] {
+function buildTopicTree(flatTopics: DbTopic[]): Topic[] {
   const topicMap = new Map<string, Topic>();
   const rootTopics: Topic[] = [];
 
@@ -38,8 +48,8 @@ function buildTopicTree(flatTopics: any[]): Topic[] {
       title: t.title,
       parentId: t.parentId,
       estMinutes: t.estMinutes,
-      currentMastery: typeof t.currentMastery === "number" ? t.currentMastery : parseFloat(t.currentMastery) || 0,
-      status: t.status,
+      currentMastery: typeof t.currentMastery === "number" ? t.currentMastery : parseFloat(String(t.currentMastery)) || 0,
+      status: t.status as Topic["status"],
       sortOrder: t.sortOrder,
       children: [],
     });
@@ -66,12 +76,15 @@ function buildTopicTree(flatTopics: any[]): Topic[] {
 }
 
 // Transform DB subject to API response format
-function formatSubject(dbSubject: any, classEvents: any[] = []): Subject {
+function formatSubject(dbSubject: DbSubjectWithTopics | null | undefined, classEvents: DbEvent[] = []): Subject {
+  if (!dbSubject) {
+    throw new Error("Subject not found");
+  }
   return {
     id: dbSubject.id,
     name: dbSubject.name,
     colorHex: dbSubject.colorHex,
-    progress: typeof dbSubject.progress === "number" ? dbSubject.progress : parseFloat(dbSubject.progress) || 0,
+    progress: typeof dbSubject.progress === "number" ? dbSubject.progress : parseFloat(String(dbSubject.progress)) || 0,
     topics: buildTopicTree(dbSubject.topics || []),
     classSlots: classEvents
       .filter((e) => e.subjectId === dbSubject.id && e.type === "class")
@@ -188,7 +201,7 @@ subjectRoutes.post("/", zValidator("json", createSubjectSchema), async (c) => {
   }
 
   // Create class events if provided
-  let classEvents: any[] = [];
+  let classEvents: DbEvent[] = [];
   if (input.classSlots && input.classSlots.length > 0) {
     classEvents = await db
       .insert(events)
@@ -256,7 +269,7 @@ subjectRoutes.patch("/:id", zValidator("json", updateSubjectSchema), async (c) =
   }
 
   // Update subject fields
-  const updateData: any = { updatedAt: now };
+  const updateData: Partial<DbSubject> = { updatedAt: now };
   if (input.name !== undefined) updateData.name = input.name;
   if (input.colorHex !== undefined) updateData.colorHex = input.colorHex;
   if (input.progress !== undefined) updateData.progress = input.progress;
@@ -329,7 +342,7 @@ subjectRoutes.delete("/:id", async (c) => {
 });
 
 // POST /api/subjects/:id/syllabus - Upload and parse syllabus PDF
-subjectRoutes.post("/:id/syllabus", async (c) => {
+subjectRoutes.post("/:id/syllabus", aiRateLimiter, async (c) => {
   const user = await getUser(c);
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
@@ -380,9 +393,12 @@ subjectRoutes.post("/:id/syllabus", async (c) => {
   }
 });
 
-// POST /api/subjects/parse-syllabus - Parse syllabus PDF without auth (returns topics only)
+// POST /api/subjects/parse-syllabus - Parse syllabus PDF (returns topics only)
 // This is used for local-first mode where we don't need to store on server
-subjectRoutes.post("/parse-syllabus", async (c) => {
+subjectRoutes.post("/parse-syllabus", aiRateLimiter, async (c) => {
+  const user = await getUser(c);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
   try {
     const formData = await c.req.formData();
     const file = formData.get("file") as File;
@@ -391,8 +407,13 @@ subjectRoutes.post("/parse-syllabus", async (c) => {
       return c.json({ error: "No file provided" }, 400);
     }
 
+    console.log("Parsing syllabus file:", file.name, "type:", file.type, "size:", file.size);
+
     // Parse PDF with Gemini
-    const parsedTopics = await parseSyllabusPdf(file);
+    const parsedTopics = await parseSyllabusPdf(file, file.type || "application/pdf");
+
+    console.log("Parsed topics count:", parsedTopics.length);
+    console.log("Parsed topics:", JSON.stringify(parsedTopics, null, 2));
 
     return c.json({ topics: parsedTopics });
   } catch (error) {

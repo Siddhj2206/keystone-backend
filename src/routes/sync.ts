@@ -13,6 +13,15 @@ import {
   events,
   studySessions,
 } from "../db/schema";
+import type {
+  AppContext,
+  DbSemester,
+  DbSubject,
+  DbTopic,
+  DbAssessment,
+  DbEvent,
+  DbStudySession,
+} from "../lib/types";
 
 export const syncRoutes = new Hono();
 
@@ -39,7 +48,7 @@ interface SyncTableData {
 // Helpers
 // ============================================================================
 
-async function getUser(c: any) {
+async function getUser(c: AppContext) {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   return session?.user ?? null;
 }
@@ -111,9 +120,9 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
     );
     const allSubjectIds = [...new Set([...subjectIds, ...clientSubjectIds])];
 
-    let serverTopics: any[] = [];
-    let serverAssessments: any[] = [];
-    let serverStudySessions: any[] = [];
+    let serverTopics: DbTopic[] = [];
+    let serverAssessments: DbAssessment[] = [];
+    let serverStudySessions: DbStudySession[] = [];
 
     if (allSubjectIds.length > 0) {
       serverTopics = await db
@@ -367,7 +376,7 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
     // ========================================================================
 
     // Remove server-only fields (userId) before sending to client
-    const stripUserId = (records: any[]) =>
+    const stripUserId = <T extends Record<string, unknown>>(records: T[]) =>
       records.map(({ userId, ...rest }) => rest);
 
     return c.json({

@@ -6,6 +6,7 @@ import { eq, and } from "drizzle-orm";
 import { auth } from "../lib/auth";
 import { db } from "../db";
 import { events, semesters } from "../db/schema";
+import type { AppContext, DbEvent, Event } from "../lib/types";
 
 export const eventRoutes = new Hono();
 
@@ -13,7 +14,7 @@ export const eventRoutes = new Hono();
 // Helpers
 // ============================================================================
 
-async function getUser(c: any) {
+async function getUser(c: AppContext) {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   return session?.user ?? null;
 }
@@ -25,13 +26,13 @@ async function getActiveSemester(userId: string) {
 }
 
 // Transform DB event to API response format
-function formatEvent(dbEvent: any) {
+function formatEvent(dbEvent: DbEvent): Event {
   return {
     id: dbEvent.id,
     semesterId: dbEvent.semesterId,
     subjectId: dbEvent.subjectId,
     title: dbEvent.title,
-    type: dbEvent.type,
+    type: dbEvent.type as Event["type"],
     dayOfWeek: dbEvent.dayOfWeek,
     startTime: dbEvent.startTime,
     endTime: dbEvent.endTime,
@@ -169,6 +170,10 @@ eventRoutes.patch("/:id", zValidator("json", updateEventSchema), async (c) => {
     .set(updateData)
     .where(eq(events.id, eventId))
     .returning();
+
+  if (!updated) {
+    return c.json({ error: "Failed to update event" }, 500);
+  }
 
   return c.json(formatEvent(updated));
 });

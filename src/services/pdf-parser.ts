@@ -2,10 +2,15 @@ import { google } from "@ai-sdk/google";
 import { generateObject } from "ai";
 import { z } from "zod";
 
+export interface ParsedSubtopic {
+  title: string;
+  estMinutes: number;
+}
+
 export interface ParsedTopic {
   title: string;
   estMinutes: number;
-  children?: ParsedTopic[];
+  children?: ParsedSubtopic[];
 }
 
 export interface ParsedClassSlot {
@@ -20,45 +25,22 @@ export interface ParsedScheduleEntry {
   classSlots: ParsedClassSlot[];
 }
 
-// Flexible schema that accepts either objects or strings for children
-// (Gemini sometimes returns strings instead of objects)
-const flexibleTopicSchema: z.ZodType<any> = z.object({
+// Subtopic schema (leaf level - no children)
+const subtopicSchema = z.object({
   title: z.string(),
-  estMinutes: z.number().default(30),
-  children: z.lazy(() => z.array(
-    z.union([
-      flexibleTopicSchema,
-      z.string() // Allow strings, we'll convert them later
-    ])
-  )).optional(),
+  estMinutes: z.number().min(15).max(90),
+});
+
+// Topic schema (root level - can have subtopics, max depth 2)
+const topicSchema = z.object({
+  title: z.string(),
+  estMinutes: z.number().min(15).max(90),
+  children: z.array(subtopicSchema).optional(),
 });
 
 const syllabusSchema = z.object({
-  topics: z.array(flexibleTopicSchema),
+  topics: z.array(topicSchema),
 });
-
-// Post-process to ensure all children are proper objects
-function normalizeTopics(topics: any[]): ParsedTopic[] {
-  return topics.map((topic) => {
-    const normalized: ParsedTopic = {
-      title: String(topic.title || "Untitled"),
-      estMinutes: typeof topic.estMinutes === "number" ? topic.estMinutes : 30,
-    };
-
-    if (topic.children && Array.isArray(topic.children) && topic.children.length > 0) {
-      normalized.children = topic.children.map((child: any) => {
-        // If child is a string, convert to topic object
-        if (typeof child === "string") {
-          return { title: child, estMinutes: 30 };
-        }
-        // Recursively normalize nested children
-        return normalizeTopics([child])[0];
-      });
-    }
-
-    return normalized;
-  });
-}
 
 const classSlotSchema = z.object({
   dayOfWeek: z.number().min(0).max(6),
@@ -86,6 +68,23 @@ const SUBJECT_COLORS = [
   "#AAAA00", // Yellow
   "#FF00AA", // Pink
 ];
+
+// Clamp estMinutes to valid range (15-90)
+function clampEstMinutes(value: number): number {
+  return Math.max(15, Math.min(90, value));
+}
+
+// Post-process topics to ensure all estMinutes are within valid range
+function normalizeTopics(topics: ParsedTopic[]): ParsedTopic[] {
+  return topics.map((topic) => ({
+    ...topic,
+    estMinutes: clampEstMinutes(topic.estMinutes),
+    children: topic.children?.map((child) => ({
+      ...child,
+      estMinutes: clampEstMinutes(child.estMinutes),
+    })),
+  }));
+}
 
 export async function parseSyllabusPdf(
   fileOrBuffer: File | Buffer,
@@ -121,39 +120,21 @@ export async function parseSyllabusPdf(
             type: "text" as const,
             text: `Analyze this syllabus document and extract a hierarchical list of topics to study.
 
-IMPORTANT: Return ONLY objects in the children array, never strings.
+For each topic, return an object with:
+- "title": the topic name (string)
+- "estMinutes": estimated study time in minutes, MUST be between 15-90 inclusive (number). Use 15 as minimum even for short topics.
+- "children": optional array of subtopics, where each subtopic has "title" and "estMinutes" (also 15-90)
 
-For each topic object:
-- "title": string - the topic name
-- "estMinutes": number - estimated study time (15-90 minutes)
-- "children": array of topic objects (optional) - subtopics
+IMPORTANT: All estMinutes values MUST be at least 15 and at most 90. Never use values outside this range.
 
-Return topics in syllabus order. Group subtopics under parent topics.
-
-Example:
-{
-  "topics": [
-    {
-      "title": "Chapter 1: Introduction",
-      "estMinutes": 30,
-      "children": [
-        { "title": "1.1 Background", "estMinutes": 20 },
-        { "title": "1.2 Key Concepts", "estMinutes": 25 }
-      ]
-    },
-    {
-      "title": "Chapter 2: Core Theory",
-      "estMinutes": 45
-    }
-  ]
-}`,
+Maximum depth is 2 levels (topics with optional subtopics, no deeper nesting).
+Return topics in syllabus order.`,
           },
         ],
       },
     ],
   });
 
-  // Normalize the response to handle any edge cases
   return normalizeTopics(result.object.topics);
 }
 
@@ -166,12 +147,14 @@ export async function parseSyllabusText(text: string): Promise<ParsedTopic[]> {
     schema: syllabusSchema,
     prompt: `Analyze this syllabus text and extract a hierarchical list of topics to study.
 
-IMPORTANT: Return ONLY objects in the children array, never strings.
+For each topic, return an object with:
+- "title": the topic name (string)
+- "estMinutes": estimated study time in minutes, MUST be between 15-90 inclusive (number). Use 15 as minimum even for short topics.
+- "children": optional array of subtopics, where each subtopic has "title" and "estMinutes" (also 15-90)
 
-For each topic object:
-- "title": string - the topic name
-- "estMinutes": number - estimated study time (15-90 minutes)
-- "children": array of topic objects (optional) - subtopics
+IMPORTANT: All estMinutes values MUST be at least 15 and at most 90. Never use values outside this range.
+
+Maximum depth is 2 levels (topics with optional subtopics, no deeper nesting).
 
 Syllabus:
 ${text}`,

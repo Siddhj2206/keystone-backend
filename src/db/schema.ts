@@ -6,6 +6,7 @@ import {
   bigint,
   real,
   timestamp,
+  index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
@@ -23,36 +24,44 @@ export const users = pgTable("user", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export const sessions = pgTable("session", {
-  id: text("id").primaryKey(),
-  expiresAt: timestamp("expires_at").notNull(),
-  token: text("token").notNull().unique(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-  ipAddress: text("ip_address"),
-  userAgent: text("user_agent"),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-});
+export const sessions = pgTable(
+  "session",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: timestamp("expires_at").notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+  },
+  (table) => [index("sessions_user_id_idx").on(table.userId)]
+);
 
-export const accounts = pgTable("account", {
-  id: text("id").primaryKey(),
-  accountId: text("account_id").notNull(),
-  providerId: text("provider_id").notNull(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  accessToken: text("access_token"),
-  refreshToken: text("refresh_token"),
-  idToken: text("id_token"),
-  accessTokenExpiresAt: timestamp("access_token_expires_at"),
-  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
-  scope: text("scope"),
-  password: text("password"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+export const accounts = pgTable(
+  "account",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at"),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [index("accounts_user_id_idx").on(table.userId)]
+);
 
 export const verifications = pgTable("verification", {
   id: text("id").primaryKey(),
@@ -68,102 +77,145 @@ export const verifications = pgTable("verification", {
 // ============================================================================
 
 // Semesters - academic term boundaries
-export const semesters = pgTable("semesters", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  name: text("name"), // Optional semester name (e.g., "Fall 2024")
-  startDate: text("start_date").notNull(), // ISO date "YYYY-MM-DD"
-  endDate: text("end_date").notNull(),
-  isActive: boolean("is_active").notNull().default(true),
-  studyHours: text("study_hours"), // JSON: {"0": 2, "1": 4, ...}
-  createdAt: bigint("created_at", { mode: "number" }).notNull(), // Unix timestamp ms
-  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-});
+export const semesters = pgTable(
+  "semesters",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name"), // Optional semester name (e.g., "Fall 2024")
+    startDate: text("start_date").notNull(), // ISO date "YYYY-MM-DD"
+    endDate: text("end_date").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    studyHours: text("study_hours"), // JSON: {"0": 2, "1": 4, ...}
+    createdAt: bigint("created_at", { mode: "number" }).notNull(), // Unix timestamp ms
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("semesters_user_id_idx").on(table.userId),
+    index("semesters_user_active_idx").on(table.userId, table.isActive),
+  ]
+);
 
 // Subjects - courses
-export const subjects = pgTable("subjects", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  semesterId: text("semester_id")
-    .notNull()
-    .references(() => semesters.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  colorHex: text("color_hex").notNull(), // "#RRGGBB"
-  progress: real("progress").notNull().default(0), // 0.0 - 1.0
-  createdAt: bigint("created_at", { mode: "number" }).notNull(),
-  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-});
+export const subjects = pgTable(
+  "subjects",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    semesterId: text("semester_id")
+      .notNull()
+      .references(() => semesters.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    colorHex: text("color_hex").notNull(), // "#RRGGBB"
+    progress: real("progress").notNull().default(0), // 0.0 - 1.0
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("subjects_user_id_idx").on(table.userId),
+    index("subjects_semester_id_idx").on(table.semesterId),
+  ]
+);
 
 // Topics - hierarchical syllabus items
-export const topics = pgTable("topics", {
-  id: text("id").primaryKey(),
-  subjectId: text("subject_id")
-    .notNull()
-    .references(() => subjects.id, { onDelete: "cascade" }),
-  parentId: text("parent_id"), // Self-referential FK for tree structure
-  title: text("title").notNull(),
-  estMinutes: integer("est_minutes").notNull().default(30),
-  currentMastery: real("current_mastery").notNull().default(0), // 0.0 - 1.0
-  status: text("status").notNull().default("pending"), // 'pending' | 'completed' | 'needs_revision'
-  sortOrder: integer("sort_order").notNull().default(0),
-  createdAt: bigint("created_at", { mode: "number" }).notNull(),
-  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-});
+export const topics = pgTable(
+  "topics",
+  {
+    id: text("id").primaryKey(),
+    subjectId: text("subject_id")
+      .notNull()
+      .references(() => subjects.id, { onDelete: "cascade" }),
+    parentId: text("parent_id"), // Self-referential FK for tree structure (cascade handled at app level)
+    title: text("title").notNull(),
+    estMinutes: integer("est_minutes").notNull().default(30),
+    currentMastery: real("current_mastery").notNull().default(0), // 0.0 - 1.0
+    status: text("status").notNull().default("pending"), // 'pending' | 'completed' | 'needs_revision'
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("topics_subject_id_idx").on(table.subjectId),
+    index("topics_parent_id_idx").on(table.parentId),
+  ]
+);
 
 // Assessments - exams/quizzes
-export const assessments = pgTable("assessments", {
-  id: text("id").primaryKey(),
-  subjectId: text("subject_id")
-    .notNull()
-    .references(() => subjects.id, { onDelete: "cascade" }),
-  title: text("title").notNull(),
-  date: bigint("date", { mode: "number" }).notNull(), // Unix timestamp ms
-  weightage: integer("weightage").notNull().default(0), // 0-100
-  topicIds: text("topic_ids"), // JSON array: ["topic-1", "topic-2"]
-  createdAt: bigint("created_at", { mode: "number" }).notNull(),
-  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-});
+export const assessments = pgTable(
+  "assessments",
+  {
+    id: text("id").primaryKey(),
+    subjectId: text("subject_id")
+      .notNull()
+      .references(() => subjects.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    date: bigint("date", { mode: "number" }).notNull(), // Unix timestamp ms
+    weightage: integer("weightage").notNull().default(0), // 0-100
+    topicIds: text("topic_ids"), // JSON array: ["topic-1", "topic-2"]
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("assessments_subject_id_idx").on(table.subjectId),
+    index("assessments_date_idx").on(table.date),
+  ]
+);
 
 // Events - merged classSlots + fixedEvents
-export const events = pgTable("events", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  semesterId: text("semester_id")
-    .notNull()
-    .references(() => semesters.id, { onDelete: "cascade" }),
-  subjectId: text("subject_id").references(() => subjects.id, {
-    onDelete: "cascade",
-  }), // null for fixed events
-  title: text("title").notNull().default(""), // For fixed events
-  type: text("type").notNull(), // 'class' | 'fixed'
-  dayOfWeek: integer("day_of_week").notNull(), // 0-6 (Sunday-Saturday)
-  startTime: text("start_time").notNull(), // "HH:MM" 24h format
-  endTime: text("end_time").notNull(),
-  colorHex: text("color_hex").notNull(), // "#RRGGBB"
-  createdAt: bigint("created_at", { mode: "number" }).notNull(),
-  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-});
+export const events = pgTable(
+  "events",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    semesterId: text("semester_id")
+      .notNull()
+      .references(() => semesters.id, { onDelete: "cascade" }),
+    subjectId: text("subject_id").references(() => subjects.id, {
+      onDelete: "cascade",
+    }), // null for fixed events
+    title: text("title").notNull().default(""), // For fixed events
+    type: text("type").notNull(), // 'class' | 'fixed'
+    dayOfWeek: integer("day_of_week").notNull(), // 0-6 (Sunday-Saturday)
+    startTime: text("start_time").notNull(), // "HH:MM" 24h format
+    endTime: text("end_time").notNull(),
+    colorHex: text("color_hex").notNull(), // "#RRGGBB"
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("events_user_id_idx").on(table.userId),
+    index("events_semester_id_idx").on(table.semesterId),
+    index("events_day_of_week_idx").on(table.dayOfWeek),
+  ]
+);
 
 // Study Sessions - scheduled study blocks
-export const studySessions = pgTable("study_sessions", {
-  id: text("id").primaryKey(),
-  topicId: text("topic_id")
-    .notNull()
-    .references(() => topics.id, { onDelete: "cascade" }),
-  startTime: bigint("start_time", { mode: "number" }).notNull(), // Unix timestamp ms
-  endTime: bigint("end_time", { mode: "number" }).notNull(),
-  status: text("status").notNull().default("scheduled"), // 'scheduled' | 'completed' | 'missed'
-  sessionType: text("session_type").notNull().default("learning"), // 'learning' | 'revision'
-  actualMinutes: integer("actual_minutes"),
-  createdAt: bigint("created_at", { mode: "number" }).notNull(),
-  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-});
+export const studySessions = pgTable(
+  "study_sessions",
+  {
+    id: text("id").primaryKey(),
+    topicId: text("topic_id")
+      .notNull()
+      .references(() => topics.id, { onDelete: "cascade" }),
+    startTime: bigint("start_time", { mode: "number" }).notNull(), // Unix timestamp ms
+    endTime: bigint("end_time", { mode: "number" }).notNull(),
+    status: text("status").notNull().default("scheduled"), // 'scheduled' | 'completed' | 'missed'
+    sessionType: text("session_type").notNull().default("learning"), // 'learning' | 'revision'
+    actualMinutes: integer("actual_minutes"),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("study_sessions_topic_id_idx").on(table.topicId),
+    index("study_sessions_start_time_idx").on(table.startTime),
+  ]
+);
 
 // ============================================================================
 // Relations

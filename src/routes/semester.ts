@@ -6,7 +6,13 @@ import { eq, and, desc, inArray } from "drizzle-orm";
 import { auth } from "../lib/auth";
 import { db } from "../db";
 import { semesters, subjects, topics, assessments, events, studySessions } from "../db/schema";
-import type { Semester, InitializeSemesterInput, UpdateSemesterInput } from "../lib/types";
+import type {
+  Semester,
+  InitializeSemesterInput,
+  UpdateSemesterInput,
+  AppContext,
+  DbSemester,
+} from "../lib/types";
 
 export const semesterRoutes = new Hono();
 
@@ -14,13 +20,13 @@ export const semesterRoutes = new Hono();
 // Helpers
 // ============================================================================
 
-async function getUser(c: any) {
+async function getUser(c: AppContext) {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   return session?.user ?? null;
 }
 
 // Transform DB semester to API response format
-function formatSemester(dbSemester: any): Semester {
+function formatSemester(dbSemester: DbSemester): Semester {
   const createdAt = typeof dbSemester.createdAt === "number"
     ? new Date(dbSemester.createdAt).toISOString()
     : dbSemester.createdAt;
@@ -126,25 +132,42 @@ semesterRoutes.post("/initialize", zValidator("json", initializeSemesterSchema),
 
   // Create subjects if provided
   if (input.subjects && input.subjects.length > 0) {
-    for (const subjectInput of input.subjects) {
-      const [newSubject] = await db
-        .insert(subjects)
-        .values({
-          id: crypto.randomUUID(),
-          userId: user.id,
-          semesterId: newSemester.id,
-          name: subjectInput.name,
-          colorHex: subjectInput.colorHex,
-          progress: 0,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
+    // Batch insert all subjects at once
+    const subjectValues = input.subjects.map((subjectInput) => ({
+      id: crypto.randomUUID(),
+      userId: user.id,
+      semesterId: newSemester.id,
+      name: subjectInput.name,
+      colorHex: subjectInput.colorHex,
+      progress: 0,
+      createdAt: now,
+      updatedAt: now,
+    }));
 
-      // Create class events if provided
+    const newSubjects = await db.insert(subjects).values(subjectValues).returning();
+
+    // Batch insert all class events at once
+    const eventValues: Array<{
+      id: string;
+      userId: string;
+      semesterId: string;
+      subjectId: string;
+      title: string;
+      type: string;
+      dayOfWeek: number;
+      startTime: string;
+      endTime: string;
+      colorHex: string;
+      createdAt: number;
+      updatedAt: number;
+    }> = [];
+
+    for (let i = 0; i < input.subjects.length; i++) {
+      const subjectInput = input.subjects[i]!;
+      const newSubject = newSubjects[i];
       if (newSubject && subjectInput.classSlots && subjectInput.classSlots.length > 0) {
-        await db.insert(events).values(
-          subjectInput.classSlots.map((slot) => ({
+        for (const slot of subjectInput.classSlots) {
+          eventValues.push({
             id: crypto.randomUUID(),
             userId: user.id,
             semesterId: newSemester.id,
@@ -157,9 +180,13 @@ semesterRoutes.post("/initialize", zValidator("json", initializeSemesterSchema),
             colorHex: subjectInput.colorHex,
             createdAt: now,
             updatedAt: now,
-          }))
-        );
+          });
+        }
       }
+    }
+
+    if (eventValues.length > 0) {
+      await db.insert(events).values(eventValues);
     }
   }
 
@@ -228,7 +255,7 @@ semesterRoutes.patch("/:id", zValidator("json", updateSemesterSchema), async (c)
   }
 
   // Build update object
-  const updateData: Record<string, any> = { updatedAt: now };
+  const updateData: Partial<DbSemester> = { updatedAt: now };
   if (input.name !== undefined) updateData.name = input.name || null;
   if (input.startDate !== undefined) updateData.startDate = input.startDate;
   if (input.endDate !== undefined) updateData.endDate = input.endDate;

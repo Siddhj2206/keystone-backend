@@ -6,7 +6,7 @@ import { eq, and, inArray } from "drizzle-orm";
 import { auth } from "../lib/auth";
 import { db } from "../db";
 import { assessments, subjects } from "../db/schema";
-import type { Assessment } from "../lib/types";
+import type { Assessment, AppContext, DbAssessment } from "../lib/types";
 
 export const assessmentRoutes = new Hono();
 
@@ -14,7 +14,7 @@ export const assessmentRoutes = new Hono();
 // Helpers
 // ============================================================================
 
-async function getUser(c: any) {
+async function getUser(c: AppContext) {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   return session?.user ?? null;
 }
@@ -30,13 +30,13 @@ function parseTopicIds(topicIds: string | null): string[] {
 }
 
 // Transform DB assessment to API response format
-function formatAssessment(dbAssessment: any): Assessment {
+function formatAssessment(dbAssessment: DbAssessment): Assessment {
   return {
     id: dbAssessment.id,
     title: dbAssessment.title,
     date: typeof dbAssessment.date === "number" 
       ? new Date(dbAssessment.date).toISOString()
-      : dbAssessment.date,
+      : String(dbAssessment.date),
     weightage: dbAssessment.weightage,
     subjectId: dbAssessment.subjectId,
     topicIds: parseTopicIds(dbAssessment.topicIds),
@@ -170,7 +170,7 @@ assessmentRoutes.patch("/:id", zValidator("json", updateAssessmentSchema), async
   }
 
   // Update assessment fields
-  const updateData: any = { updatedAt: now };
+  const updateData: Partial<DbAssessment> = { updatedAt: now };
   if (input.title !== undefined) updateData.title = input.title;
   if (input.date !== undefined) updateData.date = new Date(input.date).getTime();
   if (input.weightage !== undefined) updateData.weightage = input.weightage;
@@ -181,6 +181,10 @@ assessmentRoutes.patch("/:id", zValidator("json", updateAssessmentSchema), async
     .set(updateData)
     .where(eq(assessments.id, assessmentId))
     .returning();
+
+  if (!updated) {
+    return c.json({ error: "Failed to update assessment" }, 500);
+  }
 
   return c.json(formatAssessment(updated));
 });
