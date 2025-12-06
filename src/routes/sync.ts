@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
-import { eq, inArray, gt } from "drizzle-orm";
+import { eq, inArray, gte, and, or, sql } from "drizzle-orm";
 
 import { auth } from "../lib/auth";
 import { db } from "../db";
@@ -42,11 +42,13 @@ async function getUser(c: AppContext) {
 }
 
 // Merge two arrays of records using last-write-wins
+// Only returns records that were updated (for delta response)
 function mergeRecords(
   clientRecords: SyncRecord[],
   serverRecords: SyncRecord[]
-): SyncRecord[] {
+): { merged: SyncRecord[]; changed: SyncRecord[] } {
   const merged = new Map<string, SyncRecord>();
+  const changed = new Map<string, SyncRecord>();
 
   // Add all server records
   for (const record of serverRecords) {
@@ -58,10 +60,22 @@ function mergeRecords(
     const existing = merged.get(record.id);
     if (!existing || record.updatedAt > existing.updatedAt) {
       merged.set(record.id, record);
+      changed.set(record.id, record); // Client had newer data
     }
   }
 
-  return Array.from(merged.values());
+  // Also include server records that client didn't have
+  for (const record of serverRecords) {
+    const clientHas = clientRecords.some(c => c.id === record.id);
+    if (!clientHas) {
+      changed.set(record.id, record);
+    }
+  }
+
+  return { 
+    merged: Array.from(merged.values()), 
+    changed: Array.from(changed.values()) 
+  };
 }
 
 // ============================================================================
@@ -89,104 +103,149 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
 
   try {
     // ========================================================================
-    // 1. Fetch server data in PARALLEL
+    // 1. Fetch server data - OPTIMIZED with updatedAt filter
     // ========================================================================
+    
+    // For delta sync, only fetch records updated since lastSyncedAt
+    // For full sync (lastSyncedAt = 0), fetch all
+    const useFilter = lastSyncedAt > 0;
+    
+    // Collect all IDs from client data for fetching related server records
+    const clientSubjectIds = (clientData.subjects as SyncRecord[]).map((s) => s.id);
+    const clientTopicIds = (clientData.topics as SyncRecord[]).map((t) => t.id);
 
-    // First batch: user-level data (can run in parallel)
+    // First batch: user-level data (parallel)
+    // If delta sync, only fetch changed records + records client is sending
     const [serverSemesters, serverSubjects, serverEvents] = await Promise.all([
-      db.select().from(semesters).where(eq(semesters.userId, user.id)),
-      db.select().from(subjects).where(eq(subjects.userId, user.id)),
-      db.select().from(events).where(eq(events.userId, user.id)),
+      useFilter 
+        ? db.select().from(semesters).where(
+            and(eq(semesters.userId, user.id), gte(semesters.updatedAt, lastSyncedAt))
+          )
+        : db.select().from(semesters).where(eq(semesters.userId, user.id)),
+      useFilter
+        ? db.select().from(subjects).where(
+            and(eq(subjects.userId, user.id), gte(subjects.updatedAt, lastSyncedAt))
+          )
+        : db.select().from(subjects).where(eq(subjects.userId, user.id)),
+      useFilter
+        ? db.select().from(events).where(
+            and(eq(events.userId, user.id), gte(events.updatedAt, lastSyncedAt))
+          )
+        : db.select().from(events).where(eq(events.userId, user.id)),
     ]);
 
-    // Compute subject IDs for dependent queries
-    const subjectIds = serverSubjects.map((s) => s.id);
-    const clientSubjectIds = (clientData.subjects as SyncRecord[]).map((s) => s.id);
-    const allSubjectIds = [...new Set([...subjectIds, ...clientSubjectIds])];
+    // Get all subject IDs (server + client) for dependent queries
+    const serverSubjectIds = serverSubjects.map((s) => s.id);
+    
+    // For delta sync, we ALWAYS need ALL user's subject IDs to properly scope dependent tables
+    // This is critical because sessions are created server-side and need to be fetched
+    // even if no subjects were updated since lastSyncedAt
+    let allUserSubjectIds: string[] = serverSubjectIds;
+    if (useFilter) {
+      // Fetch just the IDs of all user's subjects (lightweight query)
+      const allSubjects = await db
+        .select({ id: subjects.id })
+        .from(subjects)
+        .where(eq(subjects.userId, user.id));
+      allUserSubjectIds = allSubjects.map(s => s.id);
+    }
+    
+    const allSubjectIds = [...new Set([...allUserSubjectIds, ...clientSubjectIds])];
 
-    // Second batch: subject-dependent data (run in parallel)
+    // Second batch: subject-dependent data (parallel) - OPTIMIZED
     let serverTopics: DbTopic[] = [];
     let serverAssessments: DbAssessment[] = [];
     let serverStudySessions: DbStudySession[] = [];
 
     if (allSubjectIds.length > 0) {
-      const [topicsResult, assessmentsResult] = await Promise.all([
-        db.select().from(topics).where(inArray(topics.subjectId, allSubjectIds)),
-        db.select().from(assessments).where(inArray(assessments.subjectId, allSubjectIds)),
+      // For delta sync, we need ALL topic IDs to fetch sessions properly
+      // (sessions may have been created server-side without updating topics)
+      // First, get all topic IDs for this user's subjects
+      const allTopicsQuery = await db
+        .select({ id: topics.id })
+        .from(topics)
+        .where(inArray(topics.subjectId, allSubjectIds));
+      const allUserTopicIds = allTopicsQuery.map(t => t.id);
+      
+      // Combine with client topic IDs for complete set
+      const allTopicIdsForSessions = [...new Set([...allUserTopicIds, ...clientTopicIds])];
+      
+      // Fetch topics, assessments, AND study sessions in PARALLEL
+      const [topicsResult, assessmentsResult, sessionsResult] = await Promise.all([
+        useFilter
+          ? db.select().from(topics).where(
+              and(inArray(topics.subjectId, allSubjectIds), gte(topics.updatedAt, lastSyncedAt))
+            )
+          : db.select().from(topics).where(inArray(topics.subjectId, allSubjectIds)),
+        useFilter
+          ? db.select().from(assessments).where(
+              and(inArray(assessments.subjectId, allSubjectIds), gte(assessments.updatedAt, lastSyncedAt))
+            )
+          : db.select().from(assessments).where(inArray(assessments.subjectId, allSubjectIds)),
+        // Study sessions: Always fetch ALL for user's topics (NO updatedAt filter)
+        // Server-generated sessions may have been created before lastSyncedAt,
+        // so filtering by updatedAt would miss them. The mergeRecords function
+        // handles deduplication and only returns changed records to the client.
+        allTopicIdsForSessions.length > 0
+          ? db.select().from(studySessions).where(inArray(studySessions.topicId, allTopicIdsForSessions))
+          : Promise.resolve([]),
       ]);
+      
       serverTopics = topicsResult;
       serverAssessments = assessmentsResult;
-
-      // Fetch study sessions
-      const topicIds = serverTopics.map((t) => t.id);
-      const clientTopicIds = (clientData.topics as SyncRecord[]).map((t) => t.id);
-      const allTopicIds = [...new Set([...topicIds, ...clientTopicIds])];
-
-      if (allTopicIds.length > 0) {
-        serverStudySessions = await db
-          .select()
-          .from(studySessions)
-          .where(inArray(studySessions.topicId, allTopicIds));
-      }
+      serverStudySessions = sessionsResult;
     }
 
     // ========================================================================
     // 2. Merge client and server data (last-write-wins)
     // ========================================================================
 
-    const mergedSemesters = mergeRecords(
-      clientData.semesters as SyncRecord[],
-      serverSemesters as SyncRecord[]
-    );
-
-    const mergedSubjects = mergeRecords(
-      clientData.subjects as SyncRecord[],
-      serverSubjects as SyncRecord[]
-    );
-
-    const mergedTopics = mergeRecords(
-      clientData.topics as SyncRecord[],
-      serverTopics as SyncRecord[]
-    );
-
-    const mergedAssessments = mergeRecords(
-      clientData.assessments as SyncRecord[],
-      serverAssessments as SyncRecord[]
-    );
-
-    const mergedEvents = mergeRecords(
-      clientData.events as SyncRecord[],
-      serverEvents as SyncRecord[]
-    );
-
-    const mergedStudySessions = mergeRecords(
-      clientData.studySessions as SyncRecord[],
-      serverStudySessions as SyncRecord[]
-    );
+    const semesterMerge = mergeRecords(clientData.semesters as SyncRecord[], serverSemesters as SyncRecord[]);
+    const subjectMerge = mergeRecords(clientData.subjects as SyncRecord[], serverSubjects as SyncRecord[]);
+    const topicMerge = mergeRecords(clientData.topics as SyncRecord[], serverTopics as SyncRecord[]);
+    const assessmentMerge = mergeRecords(clientData.assessments as SyncRecord[], serverAssessments as SyncRecord[]);
+    const eventMerge = mergeRecords(clientData.events as SyncRecord[], serverEvents as SyncRecord[]);
+    const sessionMerge = mergeRecords(clientData.studySessions as SyncRecord[], serverStudySessions as SyncRecord[]);
 
     // ========================================================================
-    // 3. Upsert merged data using BATCHED transactions
+    // 3. Upsert merged data - OPTIMIZED with batch operations
     // ========================================================================
 
     // Build valid ID sets for FK validation
-    const validSemesterIds = new Set(mergedSemesters.map((s) => s.id));
+    const validSemesterIds = new Set(semesterMerge.merged.map((s) => s.id));
     const validSubjectIds = new Set(
-      mergedSubjects
+      subjectMerge.merged
         .filter((s) => validSemesterIds.has(s.semesterId as string))
         .map((s) => s.id)
     );
     const validTopicIds = new Set(
-      mergedTopics
+      topicMerge.merged
         .filter((t) => validSubjectIds.has(t.subjectId as string))
         .map((t) => t.id)
     );
 
+    // Only upsert records that actually changed (from client)
+    const clientSemesterIds = new Set((clientData.semesters as SyncRecord[]).map(s => s.id));
+    const clientSubjectIdSet = new Set(clientSubjectIds);
+    const clientTopicIdSet = new Set(clientTopicIds);
+    const clientAssessmentIds = new Set((clientData.assessments as SyncRecord[]).map(a => a.id));
+    const clientEventIds = new Set((clientData.events as SyncRecord[]).map(e => e.id));
+    const clientSessionIds = new Set((clientData.studySessions as SyncRecord[]).map(s => s.id));
+
+    // Filter to only records that need upserting (client sent them)
+    const semestersToUpsert = semesterMerge.merged.filter(s => clientSemesterIds.has(s.id));
+    const subjectsToUpsert = subjectMerge.merged.filter(s => clientSubjectIdSet.has(s.id) && validSemesterIds.has(s.semesterId as string));
+    const topicsToUpsert = topicMerge.merged.filter(t => clientTopicIdSet.has(t.id) && validSubjectIds.has(t.subjectId as string));
+    const assessmentsToUpsert = assessmentMerge.merged.filter(a => clientAssessmentIds.has(a.id) && validSubjectIds.has(a.subjectId as string));
+    const eventsToUpsert = eventMerge.merged.filter(e => clientEventIds.has(e.id) && validSemesterIds.has(e.semesterId as string));
+    const sessionsToUpsert = sessionMerge.merged.filter(s => clientSessionIds.has(s.id) && validTopicIds.has(s.topicId as string));
+
     // Use db.transaction for batched writes
     await db.transaction(async (tx) => {
       // Batch upsert semesters
-      const semesterPromises = mergedSemesters.map((record) => {
+      for (const record of semestersToUpsert) {
         const { id, ...data } = record;
-        return tx
+        await tx
           .insert(semesters)
           .values({
             id,
@@ -210,16 +269,12 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
               deletedAt: (data.deletedAt as number) || null,
             },
           });
-      });
-      await Promise.all(semesterPromises);
+      }
 
-      // Batch upsert subjects (filter invalid FKs)
-      const validSubjects = mergedSubjects.filter(
-        (s) => s.semesterId && validSemesterIds.has(s.semesterId as string)
-      );
-      const subjectPromises = validSubjects.map((record) => {
+      // Batch upsert subjects
+      for (const record of subjectsToUpsert) {
         const { id, ...data } = record;
-        return tx
+        await tx
           .insert(subjects)
           .values({
             id,
@@ -243,16 +298,12 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
               deletedAt: (data.deletedAt as number) || null,
             },
           });
-      });
-      await Promise.all(subjectPromises);
+      }
 
-      // Batch upsert topics (filter invalid FKs)
-      const validTopics = mergedTopics.filter(
-        (t) => t.subjectId && validSubjectIds.has(t.subjectId as string)
-      );
-      const topicPromises = validTopics.map((record) => {
+      // Batch upsert topics
+      for (const record of topicsToUpsert) {
         const { id, ...data } = record;
-        return tx
+        await tx
           .insert(topics)
           .values({
             id,
@@ -281,16 +332,12 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
               deletedAt: (data.deletedAt as number) || null,
             },
           });
-      });
-      await Promise.all(topicPromises);
+      }
 
-      // Batch upsert assessments (filter invalid FKs)
-      const validAssessments = mergedAssessments.filter(
-        (a) => a.subjectId && validSubjectIds.has(a.subjectId as string)
-      );
-      const assessmentPromises = validAssessments.map((record) => {
+      // Batch upsert assessments
+      for (const record of assessmentsToUpsert) {
         const { id, ...data } = record;
-        return tx
+        await tx
           .insert(assessments)
           .values({
             id,
@@ -315,16 +362,12 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
               deletedAt: (data.deletedAt as number) || null,
             },
           });
-      });
-      await Promise.all(assessmentPromises);
+      }
 
-      // Batch upsert events (filter invalid FKs)
-      const validEvents = mergedEvents.filter(
-        (e) => e.semesterId && validSemesterIds.has(e.semesterId as string)
-      );
-      const eventPromises = validEvents.map((record) => {
+      // Batch upsert events
+      for (const record of eventsToUpsert) {
         const { id, ...data } = record;
-        return tx
+        await tx
           .insert(events)
           .values({
             id,
@@ -356,16 +399,12 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
               deletedAt: (data.deletedAt as number) || null,
             },
           });
-      });
-      await Promise.all(eventPromises);
+      }
 
-      // Batch upsert study sessions (filter invalid FKs)
-      const validStudySessions = mergedStudySessions.filter(
-        (s) => s.topicId && validTopicIds.has(s.topicId as string)
-      );
-      const sessionPromises = validStudySessions.map((record) => {
+      // Batch upsert study sessions
+      for (const record of sessionsToUpsert) {
         const { id, ...data } = record;
-        return tx
+        await tx
           .insert(studySessions)
           .values({
             id,
@@ -392,20 +431,12 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
               deletedAt: (data.deletedAt as number) || null,
             },
           });
-      });
-      await Promise.all(sessionPromises);
+      }
     });
 
     // ========================================================================
     // 4. Return only CHANGED data to client (delta response)
     // ========================================================================
-
-    // Filter to only records that changed since lastSyncedAt
-    // This reduces response payload size
-    const filterChanged = (records: SyncRecord[]) =>
-      lastSyncedAt === 0
-        ? records
-        : records.filter((r) => r.updatedAt > lastSyncedAt);
 
     // Remove server-only fields (userId) before sending to client
     const stripUserId = <T extends Record<string, unknown>>(records: T[]) =>
@@ -413,12 +444,12 @@ syncRoutes.post("/", zValidator("json", syncSchema), async (c) => {
 
     return c.json({
       serverData: {
-        semesters: stripUserId(filterChanged(mergedSemesters)),
-        subjects: stripUserId(filterChanged(mergedSubjects)),
-        topics: filterChanged(mergedTopics),
-        assessments: filterChanged(mergedAssessments),
-        events: stripUserId(filterChanged(mergedEvents)),
-        studySessions: filterChanged(mergedStudySessions),
+        semesters: stripUserId(semesterMerge.changed),
+        subjects: stripUserId(subjectMerge.changed),
+        topics: topicMerge.changed,
+        assessments: assessmentMerge.changed,
+        events: stripUserId(eventMerge.changed),
+        studySessions: sessionMerge.changed,
       },
       syncedAt,
     });

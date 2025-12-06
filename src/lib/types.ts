@@ -186,8 +186,12 @@ export interface UpdateAssessmentInput {
   topicIds?: string[];
 }
 
+// Difficulty rating for session completion
+export type SessionDifficulty = "easy" | "good" | "hard" | "forgot";
+
 export interface CompleteSessionInput {
   actualMinutes: number;
+  difficulty: SessionDifficulty; // How hard was the material?
   needsMoreTime: boolean;
   remainingMinutes?: number;
 }
@@ -246,23 +250,62 @@ export interface ScheduleGenerationResult {
   sessionsCreated: number;
 }
 
-// Types for ML schedule generation service
+// Types for Python schedule generation service
 export interface ScheduleGenerationRequest {
-  subjects: {
+  topics: {
     id: string;
-    name: string;
-    topics?: {
-      id: string;
-      title: string;
-      estMinutes: number;
-      status: "pending" | "completed" | "needs_revision";
-    }[];
+    subject_id: string;
+    title: string;
+    est_minutes: number;
+    current_mastery: number;
+    status: "pending" | "completed" | "needs_revision";
+    last_studied_at?: number;
   }[];
-  studyHours: DailyStudyHours;
-  startDate?: string;
-  endDate?: string;
+  assessments: {
+    id: string;
+    subject_id: string;
+    title: string;
+    date: number; // Unix timestamp ms
+    weightage: number;
+    topic_ids: string[];
+  }[];
+  study_hours: Record<number, number>; // day of week -> minutes
+  session_preferences: {
+    min_minutes: number;
+    max_minutes: number;
+  };
+  start_date: string; // YYYY-MM-DD
+  end_date: string; // YYYY-MM-DD
+  recent_study_time?: {
+    subject_id: string;
+    minutes_studied: number;
+  }[];
 }
 
+export interface StudyTask {
+  topic_id: string;
+  topic_title: string;
+  subject_id: string;
+  duration_minutes: number;
+  session_type: "learning" | "revision";
+  priority_score: number;
+}
+
+export interface DailyPlan {
+  date: string; // YYYY-MM-DD
+  tasks: StudyTask[];
+  total_minutes: number;
+  available_minutes: number;
+}
+
+export interface ScheduleGenerationResponse {
+  daily_plans: DailyPlan[];
+  total_days: number;
+  total_study_minutes: number;
+  topics_covered: number;
+}
+
+// Legacy type for backward compatibility
 export interface GeneratedStudySession {
   topicId: string;
   startTime: string;

@@ -90,6 +90,7 @@ app.route("/api/sync", syncRoutes);
 export default {
   port: process.env.PORT || 3000,
   fetch: app.fetch,
+  idleTimeout: 120, // 2 minutes for long-running requests like schedule generation
 };
 
 console.log(`Keystone backend running on port ${process.env.PORT || 3000}`);
